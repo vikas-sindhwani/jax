@@ -632,7 +632,6 @@ def _xla_callable(fun, device_assignment, device_values, *abstract_args):
     axis_env = AxisEnv(jaxpr_replicas(jaxpr), [], [])
     compiled, result_shapes = _compile_jaxpr(jaxpr, device_assignment, axis_env, consts,
                                              *abstract_args)
-    print(jaxpr)
     del master, consts, jaxpr, env
   if device_values:
     handle_result = tuple(map(_device_persistent_result_handler, result_shapes))
