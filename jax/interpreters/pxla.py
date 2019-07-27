@@ -30,7 +30,7 @@ from .. import linear_util as lu
 from ..abstract_arrays import ConcreteArray, ShapedArray, make_shaped_array
 from ..util import partial, unzip2, concatenate, prod, memoize_unary
 from ..lib import xla_bridge as xb
-from .xla import xla_shape, xla_destructure, xla_shape_to_result_shape
+# from .xla import xla_shape, xla_destructure, xla_shape_to_result_shape
 from .partial_eval import trace_to_subjaxpr, merge_pvals, JaxprTrace, PartialVal
 from .batching import dimsize, broadcast
 from . import batching
