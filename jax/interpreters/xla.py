@@ -40,7 +40,6 @@ from . import partial_eval as pe
 from . import ad
 
 map = safe_map  # TODO: remove
-def _map(f, *xs): return tuple(map(f, *xs))
 
 FLAGS = flags.FLAGS
 flags.DEFINE_bool('jax_device_values',
@@ -50,14 +49,13 @@ flags.DEFINE_bool('jax_debug_nans',
                   strtobool(os.getenv('JAX_DEBUG_NANS', "False")),
                   'Add nan checks to every operation.')
 
+def _map(f, *xs): return tuple(map(f, *xs))
 def identity(x): return x
 
 
 ### handlers
 
 xb.register_constant_handler(core.Unit, lambda c, *_: c.Tuple())
-def _device_array_constant_handler(c, val, canonicalize_types=True):
-  return c.Constant(onp.asarray(val), canonicalize_types=canonicalize_types)
 
 def aval_to_xla_shape(aval):
   try:
@@ -553,8 +551,10 @@ class DeviceArray(DeviceValue):
 core.literalable_types.add(DeviceArray)
 core.pytype_aval_mappings[DeviceArray] = ConcreteArray
 pytype_aval_mappings[DeviceArray] = make_shaped_array
-xb.register_constant_handler(DeviceArray, _device_array_constant_handler)
 canonicalize_dtype_handlers[DeviceArray] = identity  # already canonicalized
+def _device_array_constant_handler(c, val, canonicalize_types=True):
+  return c.Constant(onp.asarray(val), canonicalize_types=canonicalize_types)
+xb.register_constant_handler(DeviceArray, _device_array_constant_handler)
 def _device_put_device_array(x, device_num):
   if x.device_buffer.device() == device_num:
     return x.device_buffer
