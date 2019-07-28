@@ -3999,7 +3999,8 @@ class _EyeConstant(xla.DeviceConstant):
 for _t in [_FilledConstant, _IotaConstant, _EyeConstant]:
   xla_bridge.register_constant_handler(_t, _t.constant_handler)
   core.pytype_aval_mappings[_t] = ConcreteArray
-  xla.pytype_aval_mappings[_t] = xla.pytype_aval_mappings[xla.DeviceArray]
+  xla.pytype_aval_mappings[_t] = make_shaped_array
+  xla.device_put_handlers[_t] = xla._instantiate_device_constant
   xla.canonicalize_dtype_handlers[_t] = _identity
   batching.pytype_aval_mappings[_t] = make_shaped_array
   ad_util.jaxval_adders[_t] = add
