@@ -62,21 +62,14 @@ def shard_arg(device_ordinals, axis_size, arg):
   """
   nrep = len(device_ordinals)
   assignments = assign_shards_to_replicas(nrep, axis_size)
-  if (type(arg) in (ShardedDeviceArray, ShardedDeviceTuple)
-      and nrep == len(arg.device_buffers)):
-    _, ids = onp.unique(assignments, return_index=True)
+  if type(arg) is ShardedDeviceArray and nrep == len(arg.device_buffers):
     get_shard = memoize_unary(lambda i: arg.device_buffers[i].to_py())
     return [buf if buf.device() == device_ordinals[r]
             else xla.device_put(get_shard(i), device_ordinals[r])
             for r, (i, buf) in enumerate(zip(assignments, arg.device_buffers))]
   else:
-    shards = [(_slice(arg, assignments[i]), device_ordinals[i])
-              for i in range(len(assignments))]
-    return [xla.device_put(v, device) for v, device in shards]
-
-def _slice(x, i):
-  """Return the ith slice of an array."""
-  return x[i]
+    return [xla.device_put(arg[a], device_ordinals[i])
+            for i, a in enumerate(assignments)]
 
 def xla_shard(c, sizes, x):
   def _xla_shard(shape, x):
