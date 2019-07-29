@@ -537,7 +537,10 @@ pytype_aval_mappings = {}
 
 class Unit(object): pass
 unit = Unit()
-unitvar = '*'
+
+class UnitVar(object):
+  def __repr__(self): return '*'
+unitvar = UnitVar()
 
 pytype_aval_mappings[Unit] = lambda _: abstract_unit
 

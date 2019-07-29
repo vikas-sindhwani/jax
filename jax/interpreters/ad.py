@@ -27,7 +27,7 @@ from ..abstract_arrays import raise_to_shaped
 from ..util import unzip2, unzip3, safe_map, safe_zip, partial
 from ..tree_util import process_pytree, build_tree, register_pytree_node, tree_map
 from ..linear_util import thunk, staged, transformation, transformation_with_aux, wrap_init
-from ..api_util import flatten_fun  # TODO: can we avoid this?
+from ..api_util import flatten_fun, flatten_fun_nokwargs  # TODO: can we avoid this?
 from ..tree_util import tree_flatten, tree_unflatten
 
 from six.moves import builtins, reduce
@@ -121,8 +121,6 @@ def ignore_consts(ct, pval):
   aval, const = pval
   if isinstance(aval, core.AbstractValue):
     return ct
-  elif isinstance(aval, pe.JaxprTracerTuple):
-    return pack(map(ignore_consts, ct, zip(aval, const)))
   elif aval is None:
     return core.unit
   else:
@@ -164,26 +162,20 @@ def backward_pass(jaxpr, consts, freevar_vals, args, cotangents_in):
   ct_env = {}
   map(write_cotangent, jaxpr.outvars, cotangents_in)
   for eqn in jaxpr.eqns[::-1]:
-    cts_in = map(read_cotangent, eqn.outvars)
     invals = map(read_primal, eqn.invars)
+    if eqn.primitive.multiple_results:
+      cts_in = map(read_cotangent, eqn.outvars)
+    else:
+      cts_in, = map(read_cotangent, eqn.outvars)
     if eqn.bound_subjaxprs:
-      assert False, "update it"
-      subjaxprs, sub_consts, sub_freevar_vals = unzip3([
-          (subjaxpr,
-           map(read_primal, const_vars),
-           map(read_primal, bound_vars))
-          for subjaxpr, const_vars, bound_vars in eqn.bound_subjaxprs])
-      cts_out, ct_free_vars_out = get_primitive_transpose(eqn.primitive)(
-          eqn.params, subjaxprs, sub_consts, sub_freevar_vals, invals, ct_in)
-      (_, _, bound_vars), = eqn.bound_subjaxprs
+      (subjaxpr, const_vars, bound_vars), = eqn.bound_subjaxprs
+      sub_consts = map(read_primal, const_vars)
+      sub_freevar_vals = map(read_primal, bound_vars)
+      ct_free_vars_out, cts_out = get_primitive_transpose(eqn.primitive)(
+          eqn.params, subjaxpr, sub_consts, sub_freevar_vals, invals, cts_in)
       map(write_cotangent, bound_vars, ct_free_vars_out)
     else:
-      if eqn.primitive.multiple_results:
-        cts_out = get_primitive_transpose(eqn.primitive)(cts_in, *invals, **eqn.params)
-      else:
-        ct_in, = cts_in
-        cts_out = get_primitive_transpose(eqn.primitive)(ct_in, *invals, **eqn.params)
-
+      cts_out = get_primitive_transpose(eqn.primitive)(cts_in, *invals, **eqn.params)
     map(write_cotangent, eqn.invars, cts_out)
 
   freevar_cts = map(read_cotangent, jaxpr.freevars)
@@ -240,38 +232,15 @@ class JVPTrace(Trace):
     return out_jtuple, todo
 
   def join(self, xt, yt):
-    isfull = lambda t: t is not zero and not isinstance(t, TangentTuple)
-    if isfull(xt) and isfull(yt):
+    xz, yz = xt is zero, yt is zero
+    if xz == yz:
       return xt, yt
-    elif isfull(xt):
-      if yt is zero:
-        return xt, zeros_like_jaxval(xt)
-      elif isinstance(xt, TangentTuple):
-        return xt, JaxTuple(map(zeros_like_jaxval, xt))
-      else:
-        raise TypeError
-    elif isfull(yt):
-      if xt is zero:
-        return zeros_like_jaxval(yt), yt
-      elif isinstance(xt, TangentTuple):
-        return JaxTuple(map(zeros_like_jaxval, yt)), yt
-      else:
-        raise TypeError
-    elif isinstance(xt, TangentTuple) or isinstance(yt, TangentTuple):
-      if xt is zero:
-        xt = TangentTuple((zero,) * len(yt))
-      elif yt is zero:
-        yt = TangentTuple((zero,) * len(xt))
-      return TangentTuple(map(self.join, xt, yt))
-    elif xt is zero and yt is zero:
-      return xt, yt
+    elif yz and not xz:
+      return xt, zeros_like_jaxval(xt)
+    elif xz and not yz:
+      return zeros_like_jaxval(yt), yt
     else:
       raise TypeError((xt, yt))
-
-  def pack(self, tracers):
-    primals = pack(t.primal for t in tracers)
-    tangents = TangentTuple([t.tangent for t in tracers])
-    return JVPTracer(self, primals, tangents)
 
 
 class JVPTracer(Tracer):
@@ -288,12 +257,6 @@ class JVPTracer(Tracer):
   def aval(self):
     # TODO(dougalm): add epsilon ball
     return get_aval(self.primal)
-
-  def unpack(self):
-    if self.tangent is zero:
-      return self.full_lower()
-    else:
-      return map(partial(JVPTracer, self.trace), self.primal, self.tangent)
 
   def full_lower(self):
     if self.tangent is zero:
@@ -453,17 +416,8 @@ deflinear(add_jaxvals_p, lambda t: (t, t))
 
 
 def instantiate_zeros_at(instantiate, example, tangent):
-  t = type(instantiate)
-  if t is tuple:
-    # note to future selves: it wasn't clear whether to pack here
-    return TangentTuple(map(instantiate_zeros_at, instantiate, example, tangent))
-  elif t is bool:
-    if instantiate:
-      return instantiate_zeros(example, tangent)
-    else:
-      return tangent
-  else:
-    raise TypeError(t)
+  assert type(instantiate) is bool
+  return instantiate_zeros(example, tangent) if instantiate else tangent
 
 def instantiate_zeros(example, tangent):
   if tangent is zero:
@@ -474,8 +428,6 @@ def instantiate_zeros(example, tangent):
 def instantiate_zeros_aval(aval, tangent):
   if tangent is zero:
     return zeros_like_aval(aval)
-  elif isinstance(tangent, TangentTuple):
-    return pack(map(instantiate_zeros_aval, aval, tangent))
   else:
     return tangent
 
@@ -488,26 +440,12 @@ def traceable(num_primals, in_tree_def, *new_primals_and_tangents):
   out_flat, tree_def = tree_flatten((primal_out, tangent_out))
   yield out_flat, tree_def
 
-@transformation_with_aux
-def transposed_fun(jaxpr, in_tree_def, args):
-  args, consts, freevar_vals, ct = args
-  args, ct, freevar_vals = build_tree(in_tree_def, (args, ct, freevar_vals))
-  freevar_cts, cotangents_out = yield (jaxpr, consts, freevar_vals, args, ct), {}
-  out_jtuple, tree_def = tree_to_jaxtuples((cotangents_out, freevar_cts))
-  yield out_jtuple, tree_def
-
 def call_transpose(primitive, params, jaxpr, consts, freevar_vals, args, ct):
-  jaxpr, = jaxpr
-  consts, = consts
-  freevar_vals, = freevar_vals
-  assert isinstance(jaxpr, core.Jaxpr)
-  (args, ct, freevar_vals), in_tree_def = tree_to_jaxtuples((args, ct, freevar_vals))
-  fun = wrap_init(backward_pass)
-  fun, out_tree_def = transposed_fun(fun, jaxpr, in_tree_def)
-  all_args = pack((pack(args), pack(consts), pack(freevar_vals), ct))
-  # TODO(dougalm): consider signalling to bind that no traces in fun closure
-  ans = primitive.bind(fun, all_args, **params)
-  return build_tree(out_tree_def(), ans)
+  all_args, in_tree_def = tree_flatten((consts, freevar_vals, args, ct))
+  fun = wrap_init(partial(backward_pass, jaxpr))
+  fun, out_tree = flatten_fun_nokwargs(fun, in_tree_def)
+  out_flat = primitive.bind(fun, *all_args, **params)
+  return tree_unflatten(out_tree(), out_flat)
 
 @transformation_with_aux
 def transposed_mapped(jaxpr, in_tree_def, freevar_vals, args):
@@ -530,14 +468,6 @@ def map_transpose(primitive, params, jaxpr, consts, freevar_vals, args, ct):
   freevar_cts = tree_map(lambda x: x.sum(0), freevar_cts)
   return cts_out, freevar_cts
 
-def get_nonzeros(tangent):
-  if tangent is zero:
-    return False
-  elif isinstance(tangent, TangentTuple):
-    return tuple(map(get_nonzeros, tangent))
-  else:
-    return True
-
 def put_zeros(pack, isnonzero, x):
   if isnonzero is True:
     return x
@@ -556,6 +486,7 @@ def strip_zeros(unit, pack, isnonzero, x):
 
 @transformation_with_aux
 def f_jvp_traceable(nonzero_components, *primal_tangent_pairs):
+  assert False, "update it"
   primals, tangents = unzip2(primal_tangent_pairs)
   tangents_zeros = map(partial(put_zeros, TangentTuple), nonzero_components, tangents)
   primal_out, tangent_out = yield (primals, tangents_zeros), {}
