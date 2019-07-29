@@ -42,7 +42,9 @@ from . import core
 from . import linear_util as lu
 from . import ad_util
 from .core import eval_jaxpr
-from .api_util import (wraps, flatten_fun, abstract_tuple_tree_leaves, apply_flat_fun)
+from .api_util import (wraps, flatten_fun, flatten_fun_nokwargs,
+                       abstract_tuple_tree_leaves, apply_flat_fun,
+                       apply_flat_fun_nokwargs)
 from .tree_util import (process_pytree, node_types, build_tree, PyTreeDef,
                         tree_map, tree_flatten, tree_unflatten, tree_structure,
                         tree_transpose, leaf, tree_leaves)
@@ -979,20 +981,18 @@ def vjp(fun, *primals, **kwargs):
   primals_flat, in_tree = tree_flatten(primals)
   _check_args(primals_flat)
   tree_map(_check_inexact_input_vjp, primals)
-  jaxtree_fun, out_tree = flatten_fun(fun, in_tree)
+  flat_fun, out_tree = flatten_fun_nokwargs(fun, in_tree)
   if not has_aux:
-    out_primal, out_vjp = ad.vjp(jaxtree_fun, primals_flat)
+    out_primal, out_vjp = ad.vjp(flat_fun, primals_flat)
   else:
-    out_primal, out_vjp, aux = ad.vjp(jaxtree_fun, primals_flat, has_aux=True)
+    out_primal, out_vjp, aux = ad.vjp(flat_fun, primals_flat, has_aux=True)
   out_tree = out_tree()
   if has_aux:
     out_tree, aux_tree = out_tree.children
   out_primal_py = tree_unflatten(out_tree, out_primal)
-  ct_in_trees = [out_tree]
-  ct_out_tree = PyTreeDef(node_types[tuple], None, in_trees)
-  def out_vjp_packed(cotangent_in):
-    return out_vjp(cotangent_in)
-  vjp_py = partial(apply_jaxtree_fun, out_vjp_packed, (ct_in_trees, ct_out_tree))
+  ct_in_tree = out_tree
+  ct_out_tree = in_tree
+  vjp_py = partial(apply_flat_fun_nokwargs, out_vjp, (ct_in_tree, ct_out_tree))
   if not has_aux:
     return out_primal_py, vjp_py
   else:

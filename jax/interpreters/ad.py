@@ -101,20 +101,21 @@ def linearize(traceable, *primals, **kwargs):
 
 def vjp(traceable, primals, has_aux=False):
   if not has_aux:
-    out_primal, pval, jaxpr, consts = linearize(traceable, *primals)
+    out_primals, pvals, jaxpr, consts = linearize(traceable, *primals)
   else:
-    out_primal, pval, jaxpr, consts, aux = linearize(traceable, *primals, has_aux=True)
-  def vjp_(ct):
-    ct = ignore_consts(ct, pval)
-    dummy_primal_and_ct = pack((core.unit, ct))
+    out_primals, pvals, jaxpr, consts, aux = linearize(traceable, *primals, has_aux=True)
+  def vjp_(*cts):
+    cts = tuple(map(ignore_consts, cts, pvals))
+    dummy_primals_and_cts = (core.unit,) * len(cts) + cts
     dummy_args = (None,) * len(jaxpr.invars)
-    _, arg_cts = backward_pass(jaxpr, consts, (), dummy_args, dummy_primal_and_ct)
-    return instantiate_zeros(pack(primals), arg_cts[1])
+    _, arg_cts = backward_pass(jaxpr, consts, (), dummy_args, dummy_primals_and_cts)
+    arg_cts = arg_cts[len(primals):]
+    return map(instantiate_zeros, primals, arg_cts)
 
   if not has_aux:
-    return out_primal, vjp_
+    return out_primals, vjp_
   else:
-    return out_primal, vjp_, aux
+    return out_primals, vjp_, aux
 
 def ignore_consts(ct, pval):
   aval, const = pval
@@ -136,7 +137,7 @@ def unpair_pval(pval):
     aval_1, aval_2 = aval
     return (aval_1, const_1), (aval_2, const_2)
 
-def backward_pass(jaxpr, consts, freevar_vals, args, cotangent_in):
+def backward_pass(jaxpr, consts, freevar_vals, args, cotangents_in):
   def write_cotangent(v, ct):
     # assert v not in primal_env
     if ct is not None:
@@ -156,20 +157,16 @@ def backward_pass(jaxpr, consts, freevar_vals, args, cotangent_in):
       primal_env[v] = val
 
   primal_env = {}
-  core.pat_fmap(write_primal, jaxpr.constvars, consts)
-  core.pat_fmap(write_primal, jaxpr.freevars, freevar_vals)
-  core.pat_fmap(write_primal, jaxpr.invars, args)
+  map(write_primal, jaxpr.constvars, consts)
+  map(write_primal, jaxpr.freevars, freevar_vals)
+  map(write_primal, jaxpr.invars, args)
 
-  ct_env = {jaxpr.outvar: cotangent_in}
+  ct_env = dict(zip(jaxpr.outvars, cotangents_in))
   for eqn in jaxpr.eqns[::-1]:
     cts_in = map(read_cotangent, eqn.outvars)
-    ct_in = TangentTuple(cts_in) if eqn.destructure else cts_in[0]
-    if not eqn.restructure:
-      invals = map(read_primal, eqn.invars)
-    else:
-      invals = [tuple(map(read_primal, v)) if type(v) is tuple
-                else read_primal(v) for v in eqn.invars]
+    invals = map(read_primal, eqn.invars)
     if eqn.bound_subjaxprs:
+      assert False, "update it"
       subjaxprs, sub_consts, sub_freevar_vals = unzip3([
           (subjaxpr,
            map(read_primal, const_vars),
@@ -177,43 +174,20 @@ def backward_pass(jaxpr, consts, freevar_vals, args, cotangent_in):
           for subjaxpr, const_vars, bound_vars in eqn.bound_subjaxprs])
       cts_out, ct_free_vars_out = get_primitive_transpose(eqn.primitive)(
           eqn.params, subjaxprs, sub_consts, sub_freevar_vals, invals, ct_in)
-      # TODO(dougalm): support cases != 1
-      assert(len(eqn.bound_subjaxprs) == 1)
-      _, _, bound_vars = eqn.bound_subjaxprs[0]
+      (_, _, bound_vars), = eqn.bound_subjaxprs
       map(write_cotangent, bound_vars, ct_free_vars_out)
     else:
-      cts_out = get_primitive_transpose(eqn.primitive)(ct_in, *invals, **eqn.params)
+      if eqn.primitive.multiple_results:
+        cts_out = get_primitive_transpose(eqn.primitive)(cts_in, *invals, **eqn.params)
+      else:
+        ct_in, = cts_in
+        cts_out = get_primitive_transpose(eqn.primitive)(ct_in, *invals, **eqn.params)
 
-    if cts_out is zero:
-      cts_out = [zero for _ in eqn.invars]
-    if not eqn.restructure:
-      map(write_cotangent, eqn.invars, cts_out)
-    else:
-      [map(write_cotangent, v, ct) if type(v) is tuple
-       else write_cotangent(v, ct) for v, ct in zip(eqn.invars, cts_out)]
+    map(write_cotangent, eqn.invars, cts_out)
 
-  freevar_cts = core.pat_fmap(read_cotangent, jaxpr.freevars)
-  cotangents_out = core.pat_fmap(lambda v, _: read_cotangent(v), jaxpr.invars, None)
-  cotangents_out = tuple(map(pack_cotangents_like_caller, args, cotangents_out))
+  freevar_cts = map(read_cotangent, jaxpr.freevars)
+  cotangents_out = map(read_cotangent, jaxpr.invars)
   return freevar_cts, cotangents_out
-
-def pack_cotangents_like_caller(arg, ct):
-  if type(arg) is tuple:
-    return tuple(map(pack_cotangents_like_caller, arg, ct))
-  elif arg is None:
-    return recursively_pack(ct)
-  else:
-    return None
-
-def recursively_pack(ct):
-  if type(ct) is tuple:
-    ct = tuple(map(recursively_pack, ct))
-    if any(elt is zero or isinstance(elt, TangentTuple) for elt in ct):
-      return TangentTuple(ct)
-    else:
-      return pack(ct)
-  else:
-    return ct
 
 def get_primitive_transpose(p):
   try:
@@ -221,12 +195,6 @@ def get_primitive_transpose(p):
   except KeyError:
     raise NotImplementedError(
       "Reverse-mode differentiation rule for '{}' not implemented".format(p))
-
-class TangentTuple(tuple):
-  pass
-
-register_pytree_node(
-    TangentTuple, lambda xs: (xs, None), lambda _, xs: TangentTuple(xs))
 
 class JVPTrace(Trace):
 
@@ -333,10 +301,7 @@ class JVPTracer(Tracer):
       return self
 
 def _primal_tangent_shapes_match(primal, tangent):
-  if type(tangent) is TangentTuple:
-    for p, t in zip(primal, tangent):
-      _primal_tangent_shapes_match(p, t)
-  elif tangent is not zero:
+  if tangent is not zero:
     primal_aval = raise_to_shaped(get_aval(primal))
     tangent_aval = raise_to_shaped(get_aval(tangent))
     assert primal_aval == tangent_aval

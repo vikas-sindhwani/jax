@@ -569,10 +569,7 @@ def _device_put_impl(x, device_num=0):
   except TypeError:
     raise TypeError("Argument '{}' of type {} is not a valid JAX type"
                     .format(x, type(x)))
-
-  assert False, "update it"  # TODO
-  result_shape = xla_shape_to_result_shape(aval_to_xla_shape(a))
-  handler = _device_persistent_result_handler(result_shape)
+  handler = aval_to_result_handler(a)
   return handler(device_put(x, device_num))
 
 device_put_p = core.Primitive('device_put')
