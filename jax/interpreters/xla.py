@@ -124,7 +124,7 @@ def apply_primitive(prim, *args, **params):
 
 @memoize
 def xla_primitive_callable(prim, *abstract_args, **params):
-  handle_result = result_handler(prim.abstract_eval(*abstract_args, **params))
+  handle_result = aval_to_result_handler(prim.abstract_eval(*abstract_args, **params))
   xla_shapes = tuple(map(aval_to_xla_shape, abstract_args))
   built_c = primitive_computation(prim, *xla_shapes, **params)
   compiled = built_c.Compile(xla_shapes, xb.get_compile_options(),

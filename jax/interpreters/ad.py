@@ -254,13 +254,14 @@ class JVPTrace(Trace):
   def process_call(self, call_primitive, f, tracers, params):
     primals = [t.primal for t in tracers]
     tangents = [t.tangent for t in tracers]
-    nonzero_tangents, in_tree_def = tree_to_jaxtuples(tangents)
-    f_jvp, out_tree_def = traceable(jvp_subtrace(f, self.master), in_tree_def)
-    result = call_primitive.bind(f_jvp, pack(primals), nonzero_tangents, **params)
-    primal_out, tangent_out = build_tree(out_tree_def(), result)
-    return JVPTracer(self, primal_out, tangent_out)
+    nonzero_tangents, in_tree_def = tree_flatten(tangents)
+    f_jvp, out_tree_def = traceable(jvp_subtrace(f, self.master), len(primals), in_tree_def)
+    result = call_primitive.bind(f_jvp, *(primals + nonzero_tangents), **params)
+    primal_out, tangent_out = tree_unflatten(out_tree_def(), result)
+    return [JVPTracer(self, p, t) for p, t in zip(primal_out, tangent_out)]
 
   def post_process_call(self, call_primitive, out_tracer, params):
+    assert False  # TODO: update to no-tuples
     out_jtuple, tree_def = tree_to_jaxtuples((out_tracer.primal, out_tracer.tangent))
     master = self.master
     def todo(x):
@@ -513,11 +514,13 @@ def instantiate_zeros_aval(aval, tangent):
     return tangent
 
 @transformation_with_aux
-def traceable(in_tree_def, new_primals, new_tangents):
-  new_tangents = build_tree(in_tree_def, new_tangents)
+def traceable(num_primals, in_tree_def, *new_primals_and_tangents):
+  new_primals  = new_primals_and_tangents[:num_primals]
+  new_tangents = new_primals_and_tangents[num_primals:]
+  new_tangents = tree_unflatten(in_tree_def, new_tangents)
   primal_out, tangent_out = yield (new_primals, new_tangents), {}
-  out_jtuple, tree_def = tree_to_jaxtuples((primal_out, tangent_out))
-  yield out_jtuple, tree_def
+  out_flat, tree_def = tree_flatten((primal_out, tangent_out))
+  yield out_flat, tree_def
 
 @transformation_with_aux
 def transposed_fun(jaxpr, in_tree_def, args):
