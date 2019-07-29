@@ -161,7 +161,8 @@ def backward_pass(jaxpr, consts, freevar_vals, args, cotangents_in):
   map(write_primal, jaxpr.freevars, freevar_vals)
   map(write_primal, jaxpr.invars, args)
 
-  ct_env = dict(zip(jaxpr.outvars, cotangents_in))
+  ct_env = {}
+  map(write_cotangent, jaxpr.outvars, cotangents_in)
   for eqn in jaxpr.eqns[::-1]:
     cts_in = map(read_cotangent, eqn.outvars)
     invals = map(read_primal, eqn.invars)

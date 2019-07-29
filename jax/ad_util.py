@@ -16,13 +16,14 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from .core import lattice_join, Primitive
+from .core import lattice_join, Primitive, Unit, unit
 from .tree_util import register_pytree_node
 from .util import safe_map
 
 map = safe_map
 
 jaxval_adders = {}
+jaxval_adders[Unit] = lambda _, __: unit
 
 def add_jaxvals(x, y):
   return add_jaxvals_p.bind(x, y)
