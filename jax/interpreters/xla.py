@@ -321,18 +321,25 @@ def _xla_call_impl(fun, *args, **params):
 def _xla_callable(fun, device_assignment, device_values, *abstract_args):
   pvals = [pe.PartialVal((aval, core.unit)) for aval in abstract_args]
   with core.new_master(pe.JaxprTrace, True) as master:
-    jaxpr, (pvals, consts, env) = pe.trace_to_subjaxpr(fun, master, True).call_wrapped(pvals)
+    jaxpr, (pvals, consts, env) = pe.trace_to_subjaxpr(fun, master, False).call_wrapped(pvals)
     assert not env  # no subtraces here (though cond might eventually need them)
     axis_env = AxisEnv(jaxpr_replicas(jaxpr), [], [])
     compiled = compile_jaxpr(jaxpr, device_assignment, axis_env, consts,
                              *abstract_args)
     del master, consts, jaxpr, env
-  out_avals, _ = unzip2(pvals)
-  result_handlers = tuple(map(aval_to_result_handler, out_avals))
+  result_handlers = tuple(map(_pval_to_result_handler, pvals))
   if axis_env.nreps == 1:
     return partial(_execute_compiled, compiled, pvals, result_handlers)
   else:
     return partial(_execute_replicated, compiled, pvals, result_handlers)
+
+def _pval_to_result_handler(pval):
+  pv, const = pval
+  if pv is None:
+    return lambda _: const
+  else:
+    assert isinstance(pv, core.AbstractValue)
+    return aval_to_result_handler(pv)
 
 def _execute_compiled(compiled, pvals, handlers, *args):
   device_num, = compiled.DeviceOrdinals()

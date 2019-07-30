@@ -97,6 +97,7 @@ def curry(f):
 
 def toposort(end_nodes):
   # TODO: think about repeated objects in end_nodes
+  # TODO: clean up this implementation
   child_counts = {}
   stack = list(end_nodes)
   while stack:
@@ -106,9 +107,12 @@ def toposort(end_nodes):
     else:
       child_counts[id(node)] = 1
       stack.extend(node.parents)
+  for node in end_nodes:
+    child_counts[id(node)] -= 1
 
   sorted_nodes = []
-  childless_nodes = list(end_nodes)
+  childless_nodes = [node for node in end_nodes if child_counts[id(node)] == 0]
+  assert childless_nodes
   while childless_nodes:
     node = childless_nodes.pop()
     sorted_nodes.append(node)
@@ -118,7 +122,66 @@ def toposort(end_nodes):
       else:
         child_counts[id(parent)] -= 1
 
+  check_toposort(sorted_nodes[::-1])
   return sorted_nodes[::-1]
+
+def check_toposort(nodes):
+  visited = set()
+  for node in nodes:
+    assert all(id(parent) in visited for parent in node.parents)
+    visited.add(id(node))
+
+# def toposort(end_nodes):
+#   # TODO: think about repeated objects in end_nodes
+#   child_counts = collections.Counter({n: 0 for n in end_nodes})
+#   stack = list(end_nodes)
+#   while stack:
+#     node = stack.pop()
+#     for parent in node.parents:
+#       if parent not in child_counts:
+#         stack.append(parent)
+#       child_counts[parent] += 1
+
+#   sorted_nodes = []
+#   childless_nodes = [n for n in child_counts if child_counts[n] == 0]
+#   while childless_nodes:
+#     node = childless_nodes.pop()
+#     sorted_nodes.append(node)
+#     for parent in node.parents:
+#       if child_counts[parent] == 1:
+#         childless_nodes.append(parent)
+#       else:
+#         child_counts[parent] -= 1
+#   sorted_nodes = sorted_nodes[::-1]
+
+#   check_toposort(sorted_nodes)
+#   return sorted_nodes
+
+
+# def toposort(end_nodes):
+#   # TODO: think about repeated objects in end_nodes
+#   child_counts = collections.Counter()
+#   stack = list(end_nodes)
+#   while stack:
+#     node = stack.pop()
+#     if id(node) not in child_counts:
+#       stack.extend(node.parents)
+#     child_counts[id(node)] += 1
+
+#   child_counts.subtract(end_nodes)
+#   childless_nodes = [n for n in end_nodes if child_counts[id(n)] == 0]
+
+#   sorted_nodes = []
+#   while childless_nodes:
+#     node = childless_nodes.pop()
+#     sorted_nodes.append(node)
+#     for parent in node.parents:
+#       if child_counts[id(parent)] == 1:
+#         childless_nodes.append(parent)
+#       else:
+#         child_counts[id(parent)] -= 1
+#   return sorted_nodes[::-1]
+
 
 
 def split_merge(predicate, xs):

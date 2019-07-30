@@ -150,6 +150,7 @@ class Primitive(object):
 
     tracers = map(top_trace.full_raise, args)
     out_tracer = top_trace.process_primitive(self, tracers, kwargs)
+    assert not self.multiple_results, "update it"
     return full_lower(out_tracer)
 
   def def_impl(self, impl):
@@ -551,24 +552,27 @@ identity_p.def_custom_bind(lambda x: x)
 # ------------------- Call -------------------
 
 
-def apply_todos(todos, x):
+def apply_todos(todos, outs):
   while todos:
-    x = full_lower(todos.pop()(x))
-    assert skip_checks or isinstance(x, Tracer) or valid_jaxtype(x), x
-  return x
+    outs = map(full_lower, todos.pop()(outs))
+  return outs
 
 @lu.transformation_with_aux
 def process_env_traces(primitive, level, params_tuple, *args):
-  ans = yield args, {}
+  outs = yield args, {}
+  params = dict(params_tuple)
   todo = []
-  while isinstance(ans, Tracer) and ans.trace.level > level:
-    t = ans.trace
-    sublevel = cur_sublevel()
-    trace = type(t)(t.master, sublevel)
-    ans = trace.full_raise(ans)
-    ans, cur_todo = ans.trace.post_process_call(primitive, ans, dict(params_tuple))
+  while True:
+    tracers = [x for x in outs if isinstance(x, Tracer) and x.trace.level > level]
+    if tracers:
+      ans = max(tracers, key=lambda x: x.trace.level)
+    else:
+      break
+    trace = type(ans.trace)(ans.trace.master, cur_sublevel())
+    outs = map(trace.full_raise, outs)
+    outs, cur_todo = trace.post_process_call(primitive, outs, params)
     todo.append(cur_todo)
-  yield ans, todo
+  yield outs, todo
 
 def call_bind(primitive, f, *args, **params):
   top_trace = find_top_trace(args)
@@ -577,11 +581,11 @@ def call_bind(primitive, f, *args, **params):
   f, env_trace_todo = process_env_traces(f, primitive, level, params_tuple)
   if top_trace is None:
     with new_sublevel():
-      ans = primitive.impl(f, *args, **params)
+      outs = primitive.impl(f, *args, **params)
   else:
     tracers = map(top_trace.full_raise, args)
-    ans = full_lower(top_trace.process_call(primitive, f, tracers, params))
-  return apply_todos(env_trace_todo(), ans)
+    outs = map(full_lower, top_trace.process_call(primitive, f, tracers, params))
+  return apply_todos(env_trace_todo(), outs)
 
 
 def call_impl(f, *args, **params):
@@ -618,17 +622,13 @@ def check_jaxpr(jaxpr):
   pat_fmap(write, jaxpr.freevars)
   pat_fmap(write, jaxpr.invars)
   for eqn in jaxpr.eqns:
-    if not eqn.restructure:
-      map(read, eqn.invars)
-    else:
-      [map(read, invar) if type(invar) is tuple else read(invar)
-       for invar in eqn.invars]
+    map(read, eqn.invars)
     for subjaxpr, constvars, freevars in eqn.bound_subjaxprs:
       map(read, freevars)
       map(read, constvars)
       check_jaxpr(subjaxpr)
     map(write, eqn.outvars)
-  read(jaxpr.outvar)
+  map(read, jaxpr.outvars)
 
 
 def pp_jaxpr(jaxpr):

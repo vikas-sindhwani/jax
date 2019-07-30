@@ -47,10 +47,11 @@ def jvp(fun, has_aux=False, instantiate=True):
 @transformation
 def jvpfun(instantiate, primals, tangents):
   with new_master(JVPTrace) as master:
-    out_primal, out_tangent = yield (master, primals, tangents), {}
+    out_primals, out_tangents = yield (master, primals, tangents), {}
     del master
-  out_tangent = instantiate_zeros_at(instantiate, out_primal, out_tangent)
-  yield (out_primal, out_tangent)
+  out_tangents = map(partial(instantiate_zeros_at, instantiate),
+                     out_primals, out_tangents)
+  yield (out_primals, out_tangents)
 
 
 @transformation
@@ -66,6 +67,7 @@ def jvp_subtrace(master, primals, tangents):
 
 @transformation_with_aux
 def jvp_subtrace_aux(instantiate, master, primals, tangents):
+  assert False, "update it"
   trace = JVPTrace(master, core.cur_sublevel())
   for x in list(primals) + list(tangents):
     if isinstance(x, Tracer):
@@ -82,7 +84,6 @@ def linearize(traceable, *primals, **kwargs):
   if not has_aux:
     jvpfun = jvp(traceable)
   else:
-    assert False, "TODO"
     jvpfun, aux = jvp(traceable, has_aux=True)
 
   in_pvals = (tuple(pe.PartialVal((None, p)) for p in primals)
@@ -201,6 +202,7 @@ class JVPTrace(Trace):
     return JVPTracer(self, val.primal, val.tangent)
 
   def process_primitive(self, primitive, tracers, params):
+    assert not primitive.multiple_results, "update it"
     primals_in = [t.primal for t in tracers]
     tangents_in = [t.tangent for t in tracers]
     try:
@@ -221,15 +223,17 @@ class JVPTrace(Trace):
     primal_out, tangent_out = tree_unflatten(out_tree_def(), result)
     return [JVPTracer(self, p, t) for p, t in zip(primal_out, tangent_out)]
 
-  def post_process_call(self, call_primitive, out_tracer, params):
-    assert False  # TODO: update to no-tuples
-    out_jtuple, tree_def = tree_to_jaxtuples((out_tracer.primal, out_tracer.tangent))
+  def post_process_call(self, call_primitive, out_tracers, params):
+    primals, tangents = unzip2((t.primal, t.tangent) for t in out_tracers)
+    out = primals + tangents
+    del primals, tangents
     master = self.master
     def todo(x):
+      n = len(x) // 2
+      primals, tangents = x[:n], x[n:]
       trace = JVPTrace(master, core.cur_sublevel())
-      return JVPTracer(trace, *build_tree(tree_def, x))
-
-    return out_jtuple, todo
+      return map(partial(JVPTracer, trace), primals, tangents)
+    return out, todo
 
   def join(self, xt, yt):
     xz, yz = xt is zero, yt is zero
@@ -447,8 +451,11 @@ def call_transpose(primitive, params, jaxpr, consts, freevar_vals, args, ct):
   out_flat = primitive.bind(fun, *all_args, **params)
   return tree_unflatten(out_tree(), out_flat)
 
+primitive_transposes[core.call_p] = partial(call_transpose, call_p)
+
 @transformation_with_aux
 def transposed_mapped(jaxpr, in_tree_def, freevar_vals, args):
+  assert False, "update it"
   args, consts, ct = args
   args, ct = build_tree(in_tree_def, (args, ct))
   freevar_cts, cotangents_out = yield (jaxpr, consts, freevar_vals, args, ct), {}
@@ -456,6 +463,7 @@ def transposed_mapped(jaxpr, in_tree_def, freevar_vals, args):
   yield out_jtuple, tree_def
 
 def map_transpose(primitive, params, jaxpr, consts, freevar_vals, args, ct):
+  assert False, "update it"
   jaxpr, = jaxpr
   consts, = consts
   freevar_vals, = freevar_vals
@@ -497,6 +505,7 @@ def f_jvp_traceable(nonzero_components, *primal_tangent_pairs):
   yield pack(primal_tangent_pairs_out), nonzeros_out
 
 def jvp_jaxpr(jaxpr, nonzeros, instantiate):
+  assert False, "update it"
   # jaxpr :: d -> a -> b -> (c1, c2)
   # avals = (d, a, b)
   # f :: d -> a -> b -> (c1, c2)
@@ -517,4 +526,3 @@ def jvp_jaxpr(jaxpr, nonzeros, instantiate):
   return jaxpr_out, out_nonzeros()
 
 
-primitive_transposes[core.call_p] = partial(call_transpose, call_p)

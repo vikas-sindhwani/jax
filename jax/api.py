@@ -999,19 +999,6 @@ def vjp(fun, *primals, **kwargs):
     return out_primal_py, vjp_py, tree_unflatten(aux_tree, aux)
 
 
-def trace_to_jaxpr(traceable, py_pvals, **kwargs):
-  fun = lu.wrap_init(traceable, kwargs)
-  pvals, in_trees = unzip2(map(tree_to_pval_tuples, py_pvals))
-  jaxtree_fun, out_tree = pytree_fun_to_jaxtupletree_fun(fun, in_trees)
-  jaxpr, out_pval, consts = pe.trace_to_jaxpr(jaxtree_fun, pvals)
-  return jaxpr, consts, out_pval, (in_trees, out_tree())
-
-def lift_jaxpr(jaxpr, consts, io_tree, pvals, py_args):
-  def fun(*args):
-    ans = eval_jaxpr(jaxpr, consts, (), *args)
-    return pe.merge_pvals(ans, pvals)
-  return apply_jaxtree_fun(fun, io_tree, *py_args)
-
 def make_jaxpr(fun):
   """Creates a function that produces its jaxpr given example args.
 
@@ -1074,8 +1061,6 @@ def make_jaxpr(fun):
 
   jaxpr_maker.__name__ = "make_jaxpr({})".format(jaxpr_maker.__name__)
   return jaxpr_maker
-
-tree_to_pval_tuples = partial(process_pytree, pe.pack_pvals)
 
 
 def device_put(x, device_num=0):
