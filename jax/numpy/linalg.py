@@ -16,15 +16,18 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+from functools import partial
 
 import numpy as onp
 import warnings
 
+from jax import jit
 from .. import lax
 from .. import lax_linalg
 from .lax_numpy import _not_implemented
 from .lax_numpy import _wraps
 from . import lax_numpy as np
+from ..api import custom_transforms, defjvp
 from ..util import get_module_functions
 from ..lib import xla_bridge
 
@@ -57,7 +60,16 @@ def svd(a, full_matrices=True, compute_uv=True):
   return lax_linalg.svd(a, full_matrices, compute_uv)
 
 
+# TODO(pfau): make this work for complex types
+def _jvp_slogdet(g, ans, x):
+  jvp_sign = np.zeros(x.shape[:-2])
+  jvp_logdet = np.trace(solve(x, g), axis1=-1, axis2=-2)
+  return jvp_sign, jvp_logdet
+
+
 @_wraps(onp.linalg.slogdet)
+@custom_transforms
+@jit
 def slogdet(a):
   a = _promote_arg_dtypes(np.asarray(a))
   dtype = lax.dtype(a)
@@ -70,10 +82,10 @@ def slogdet(a):
   is_zero = np.any(diag == np.array(0, dtype=dtype), axis=-1)
   parity = np.count_nonzero(pivot != np.arange(a_shape[-1]), axis=-1)
   if np.iscomplexobj(a):
-    sign = np.prod(diag / np.abs(diag))
+    sign = np.prod(diag / np.abs(diag), axis=-1)
   else:
     sign = np.array(1, dtype=dtype)
-    parity = parity + np.count_nonzero(diag < 0)
+    parity = parity + np.count_nonzero(diag < 0, axis=-1)
   sign = np.where(is_zero,
                   np.array(0, dtype=dtype),
                   sign * np.array(-2 * (parity % 2) + 1, dtype=dtype))
@@ -81,6 +93,7 @@ def slogdet(a):
       is_zero, np.array(-np.inf, dtype=dtype),
       np.sum(np.log(np.abs(diag)), axis=-1))
   return sign, np.real(logdet)
+defjvp(slogdet, _jvp_slogdet)
 
 
 @_wraps(onp.linalg.det)
@@ -120,13 +133,17 @@ def inv(a):
     a, lax.broadcast(np.eye(a.shape[-1], dtype=lax.dtype(a)), a.shape[:-2]))
 
 
-@_wraps(onp.linalg.norm)
-def norm(x, ord=None, axis=None, keepdims=False):
+@partial(jit, static_argnums=(1, 2, 3))
+def _norm(x, ord, axis, keepdims):
   x = _promote_arg_dtypes(np.asarray(x))
   x_shape = np.shape(x)
   ndim = len(x_shape)
 
   if axis is None:
+    # NumPy has an undocumented behavior that admits arbitrary rank inputs if
+    # `ord` is None: https://github.com/numpy/numpy/issues/14215
+    if ord is None:
+      return np.sqrt(np.sum(np.real(x * np.conj(x)), keepdims=keepdims))
     axis = tuple(range(ndim))
   elif isinstance(axis, tuple):
     axis = tuple(np._canonicalize_axis(x, ndim) for x in axis)
@@ -201,6 +218,10 @@ def norm(x, ord=None, axis=None, keepdims=False):
     raise ValueError(
         "Invalid axis values ({}) for np.linalg.norm.".format(axis))
 
+@_wraps(onp.linalg.norm)
+def norm(x, ord=None, axis=None, keepdims=False):
+  return _norm(x, ord, axis, keepdims)
+
 
 @_wraps(onp.linalg.qr)
 def qr(a, mode="reduced"):
@@ -218,6 +239,7 @@ def qr(a, mode="reduced"):
 
 
 @_wraps(onp.linalg.solve)
+@jit
 def solve(a, b):
   a, b = _promote_arg_dtypes(np.asarray(a), np.asarray(b))
   a_shape = np.shape(a)
